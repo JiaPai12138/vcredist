@@ -1,0 +1,115 @@
+name: Sync with main repo
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    env:
+      has_release: true
+      tag_name: ""
+      release_name: ""
+      latest_tag: ""
+      move_on: true
+      release_note: ""
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Get latest release info
+        id: released
+        shell: bash
+        run: |
+          response=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest)
+
+          if echo "$response" | grep -q "Not Found"; then
+            echo "has_release=false" >> $GITHUB_ENV
+          else
+            echo "has_release=true" >> $GITHUB_ENV
+            echo "tag_name=$(echo "$response" | jq -r .tag_name)" >> $GITHUB_ENV
+            echo "release_name=$(echo "$response" | jq -r .name)" >> $GITHUB_ENV
+          fi
+
+      - name: Get latest GitLab release tag
+        id: get_latest_tag
+        shell: bash
+        run: |
+          latest_tag=$(curl -s "https://gitlab.com/api/v4/projects/76069787/releases" \
+                        | jq -r '.[0].tag_name')
+
+          echo "latest_tag=$latest_tag" >> $GITHUB_ENV
+
+      - name: Compare GitHub and GitLab release tags
+        id: compare
+        shell: bash
+        run: |
+          echo "GitHub tag: ${{ env.tag_name }}"
+          echo "GitLab tag: ${{ env.latest_tag }}"
+
+          if [ "${{ env.tag_name }}" = "${{ env.latest_tag }}" ]; then
+            echo "move_on=false" >> $GITHUB_ENV
+            exit 0
+          else
+            echo "⚠️ Tags differ! Compiling new version!"
+            echo "tag_name=${{ env.latest_tag }}" >> $GITHUB_ENV
+            echo "release_name=${{ env.latest_tag }}" >> $GITHUB_ENV
+            exit 0
+          fi
+
+      - name: Fetch remote code
+        id: fetch_code
+        if: ${{ env.move_on == 'true' }}
+        shell: bash
+        run: |
+          git remote set-url origin https://gitlab.com/stdout12/vcredist.git
+          git fetch origin
+          git checkout tags/"${{ env.tag_name }}" -f
+
+      - name: Fetch release notes and download assets
+        id: download_assets
+        if: ${{ env.move_on == 'true' }}
+        shell: bash
+        run: |
+          release_json=$(curl -s "https://gitlab.com/api/v4/projects/76069787/releases/${{ env.latest_tag }}")
+
+          echo "release_note<<EOF" >> $GITHUB_ENV
+          desc=$(echo "$release_json" | jq -r '.description')
+          clean_desc=$(echo "$desc" | sed '/^## Downloads:/,$d')
+          echo "$clean_desc" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          mkdir -p assets
+          base_url="https://gitlab.com/-/project/76069787"
+          export LC_ALL=en_US.UTF-8
+          export LANG=en_US.UTF-8
+
+          echo "$desc" | grep -oP '\[.*?\]\(.*?\)' | while read -r link; do
+            name=$(echo "$link" | cut -d']' -f1 | tr -d '[')
+            url=$(echo "$link" | cut -d'(' -f2 | tr -d ')')
+
+            echo "Name: $name"
+            echo "Link: $url"
+            echo "--------------------"
+            download_url="${base_url}${url}"
+            curl -L "download_url" -o "assets/$name"
+          done
+
+      - name: Create Release
+        id: create_release
+        if: ${{ env.move_on == 'true' }}
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.tag_name }}
+          name: ${{ env.release_name }}
+          draft: false
+          prerelease: false
+          body: ${{ env.release_note }}
+          files: |
+            assets/*
