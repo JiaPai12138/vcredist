@@ -89,14 +89,14 @@ jobs:
           export LANG=en_US.UTF-8
 
           echo "$desc" | grep -oP '\[.*?\]\(.*?\)' | while read -r link; do
-            name=$(echo "$link" | cut -d']' -f1 | tr -d '[')
             url=$(echo "$link" | cut -d'(' -f2 | tr -d ')')
+            name=$(basename "$url")
 
             echo "Name: $name"
             echo "Link: $url"
             echo "--------------------"
             download_url="${base_url}${url}"
-            curl -L "download_url" -o "assets/$name"
+            curl -L "$download_url" -o "assets/$name"
           done
 
       - name: Create Release
